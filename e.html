@@ -1,34 +1,172 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>GB Emulator</title>
-    <script src="https://unpkg.com"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Boy ROM Runner</title>
     <style>
-        body { background: #222; color: #fff; text-align: center; font-family: sans-serif; }
-        canvas { background: #000; width: 320px; height: 288px; }
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #222;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        #drop-zone {
+            border: 2px dashed #666;
+            border-radius: 10px;
+            width: 320px;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            margin-bottom: 20px;
+            text-align: center;
+            padding: 10px;
+            background: #333;
+        }
+        #drop-zone:hover {
+            background: #444;
+            border-color: #999;
+        }
+        #canvas {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            background: #000;
+            display: none;
+            width: 320px;
+            height: 288px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        .controls {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #aaa;
+            text-align: center;
+            line-height: 1.5;
+        }
     </style>
+    <!-- Load the Binjgb emulator library from a public CDN -->
+    <script src="https://github.io"></script>
 </head>
 <body>
-    <h3>Game Boy Player</h3>
-    <input type="file" id="loader" accept=".gb,.gbc"><br><br>
-    <canvas id="canvas"></canvas>
+
+    <h1>Game Boy Emulator</h1>
+    
+    <div id="drop-zone">
+        <p>Drag & Drop your .gb ROM here<br>or click to select a file</p>
+        <input type="file" id="file-input" accept=".gb" style="display: none;">
+    </div>
+
+    <canvas id="canvas" width="160" height="144"></canvas>
+
+    <div class="controls">
+        <strong>Controls:</strong><br>
+        D-Pad: Arrow Keys | A: Z | B: X<br>
+        Start: Enter | Select: Shift
+    </div>
 
     <script>
-        const loader = document.getElementById('loader');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
         const canvas = document.getElementById('canvas');
-        
-        // Initialize WasmBoy
-        WasmBoy.config({ LCD: { targetCanvas: canvas } });
+        let emulator = null;
 
-        loader.addEventListener('change', (event) => {
-            const file = event.target.files[0];
+        // Click to upload
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        // Handle drag and drop
+        dropZone.addEventListener('dragover', (e) => e.preventDefault());
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length > 0) {
+                loadRom(e.dataTransfer.files[0]);
+            }
+        });
+
+        // Handle file selection
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                loadRom(e.target.files[0]);
+            }
+        });
+
+        function loadRom(file) {
             const reader = new FileReader();
-            reader.onload = (e) => {
-                const romArrayBuffer = e.target.result;
-                WasmBoy.loadRom(romArrayBuffer).then(() => WasmBoy.play());
+            reader.onload = function(e) {
+                const romBuffer = new Uint8Array(e.target.result);
+                startEmulator(romBuffer);
             };
             reader.readAsArrayBuffer(file);
-        });
+        }
+
+        function startEmulator(romBuffer) {
+            // Hide drop zone and show canvas
+            dropZone.style.display = 'none';
+            canvas.style.display = 'block';
+
+            // Initialize Binjgb emulator backend
+            Binjgb().then((Module) => {
+                const ctx = canvas.getContext('2d');
+                
+                // Allocate memory in WebAssembly for the ROM
+                const romPtr = Module._malloc(romBuffer.length);
+                Module.HEAPU8.set(romBuffer, romPtr);
+                
+                // Create emulator instance
+                const emu = Module._emulator_new_simple(romPtr, romBuffer.length, 44100, 2048);
+                Module._free(romPtr);
+
+                // Map standard keyboard keys to Game Boy inputs
+                const keyMap = {
+                    'ArrowUp': 0x40,    // Up
+                    'ArrowDown': 0x80,  // Down
+                    'ArrowLeft': 0x20,  // Left
+                    'ArrowRight': 0x10, // Right
+                    'z': 0x01,          // A
+                    'x': 0x02,          // B
+                    'Shift': 0x04,      // Select
+                    'Enter': 0x08       // Start
+                };
+
+                window.addEventListener('keydown', (e) => {
+                    if (keyMap[e.key]) {
+                        Module._emulator_set_joypad(emu, keyMap[e.key], true);
+                        e.preventDefault();
+                    }
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    if (keyMap[e.key]) {
+                        Module._emulator_set_joypad(emu, keyMap[e.key], false);
+                        e.preventDefault();
+                    }
+                });
+
+                // Frame loop
+                function tick() {
+                    // Run emulator for one frame duration
+                    Module._emulator_run_until_vblank(emu);
+                    
+                    // Render frame to canvas
+                    const videoPtr = Module._emulator_get_frame_buffer(emu);
+                    const videoSize = 160 * 144 * 4; // RGBA format
+                    const videoBuffer = new Uint8ClampedArray(Module.HEAPU8.buffer, videoPtr, videoSize);
+                    
+                    const imgData = new ImageData(videoBuffer, 160, 144);
+                    ctx.putImageData(imgData, 0, 0);
+
+                    requestAnimationFrame(tick);
+                }
+
+                requestAnimationFrame(tick);
+            });
+        }
     </script>
 </body>
 </html>
